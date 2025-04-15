@@ -211,10 +211,10 @@ def get_country_ip_list(ip_ver):
     urls = []
     for country in COUNTRY_LIST:
         if ip_ver == "v4":
-            url = f"https://ipdeny.com/ipblocks/data/aggregated/{country.lower()}-aggregated.zone"
+            url = f"https://www.ipdeny.com/ipblocks/data/aggregated/{country.lower()}-aggregated.zone"
             urls.append(url)
         elif ip_ver == "v6":
-            url = f"https://ipdeny.com/ipv6/ipaddresses/aggregated/{country.lower()}-aggregated.zone"
+            url = f"https://www.ipdeny.com/ipv6/ipaddresses/aggregated/{country.lower()}-aggregated.zone"
             urls.append(url)
         url = f"{GH_BASE_URL}/ipverse/rir-ip/master/country/{country.lower()}/ip{ip_ver.lower()}-aggregated.txt"
         urls.append(url)
