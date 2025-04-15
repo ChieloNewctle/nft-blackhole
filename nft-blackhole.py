@@ -9,7 +9,9 @@ __version__ = "1.1.0"
 import argparse
 import os.path
 import re
+import socket
 import ssl
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from string import Template
@@ -29,6 +31,9 @@ BLACKLIST = config["BLACKLIST"]
 COUNTRY_LIST = config["COUNTRY_LIST"]
 BLOCK_OUTPUT = config["BLOCK_OUTPUT"]
 BLOCK_FORWARD = config["BLOCK_FORWARD"]
+GH_BASE_URL = config["GH_BASE_URL"]
+TIMEOUT = config["TIMEOUT"]
+RETRIES = config["RETRIES"]
 
 
 # Correct incorrect YAML parsing of NO (Norway)
@@ -149,23 +154,30 @@ def start():
     run(["nft", "-f", "-"], input=nft_conf.encode(), check=True)
 
 
-def get_urls(urls, do_filter=False):
+def get_urls(urls):
     """Download url in threads"""
     ip_list_aggregated = []
 
     def get_cidr_or_url(url):
         if not any(map(url.startswith, ["http://", "https://"])):
             return [url]
-        try:
-            response = urllib.request.urlopen(url, timeout=10)
-            content = response.read().decode("utf-8")
-        except BaseException as exc:
-            print("WARN", getattr(exc, "message", repr(exc)), url, file=stderr)
-            ip_list = []
-        else:
-            if do_filter:
+
+        ip_list = []
+        for _ in range(RETRIES):
+            try:
+                response = urllib.request.urlopen(url, timeout=TIMEOUT)
+                content = response.read().decode("utf-8")
+            except BaseException as exc:
+                print("WARN", getattr(exc, "message", repr(exc)), url, file=stderr)
+                if isinstance(exc, urllib.error.URLError) and isinstance(
+                    exc.reason, socket.timeout
+                ):
+                    print("RETRY", url)
+                    continue
+            else:
                 content = re.sub(r"[#;].*", "", content, flags=re.MULTILINE)
-            ip_list = list(filter(bool, map(str.strip, content.splitlines())))
+                ip_list = list(filter(bool, map(str.strip, content.splitlines())))
+            break
         return ip_list
 
     with ThreadPoolExecutor(max_workers=8) as executor:
@@ -181,7 +193,7 @@ def get_blacklist(ip_ver):
     urls = []
     for bl_url in BLACKLIST[ip_ver]:
         urls.append(bl_url)
-    ips = get_urls(urls, do_filter=True)
+    ips = get_urls(urls)
     return ips
 
 
@@ -190,30 +202,23 @@ def get_whitelist(ip_ver):
     urls = []
     for bl_url in WHITELIST[ip_ver]:
         urls.append(bl_url)
-    ips = get_urls(urls, do_filter=True)
-    return ips
-
-
-def get_country_ip_list(ip_ver):
-    """Get country lists from GitHub @herrbischoff"""
-    urls = []
-    for country in COUNTRY_LIST:
-        url = f"https://raw.staticdn.net/herrbischoff/country-ip-blocks/master/ip{ip_ver}/{country.lower()}.cidr"
-        urls.append(url)
     ips = get_urls(urls)
     return ips
 
 
-def get_country_ip_list2(ip_ver):
-    """Get country lists from ipdeny.com"""
+def get_country_ip_list(ip_ver):
+    """Get country lists from multiple sources"""
     urls = []
     for country in COUNTRY_LIST:
         if ip_ver == "v4":
-            url = f"http://ipdeny.com/ipblocks/data/aggregated/{country.lower()}-aggregated.zone"
+            url = f"https://ipdeny.com/ipblocks/data/aggregated/{country.lower()}-aggregated.zone"
+            urls.append(url)
         elif ip_ver == "v6":
-            url = f"http://ipdeny.com/ipv6/ipaddresses/aggregated/{country.lower()}-aggregated.zone"
-        else:
-            raise Exception(f"unknown ip ver: {ip_ver}")
+            url = f"https://ipdeny.com/ipv6/ipaddresses/aggregated/{country.lower()}-aggregated.zone"
+            urls.append(url)
+        url = f"{GH_BASE_URL}/ipverse/rir-ip/master/country/{country.lower()}/ip{ip_ver.lower()}-aggregated.txt"
+        urls.append(url)
+        url = f"{GH_BASE_URL}/herrbischoff/country-ip-blocks/master/ip{ip_ver}/{country.lower()}.cidr"
         urls.append(url)
     ips = get_urls(urls)
     return ips

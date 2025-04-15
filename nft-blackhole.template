@@ -3,12 +3,14 @@ table inet blackhole {
         type ipv4_addr
         flags interval
         auto-merge
+        elements = { 0.0.0.0/0 }
     }
 
     set whitelist-v6 {
         type ipv6_addr
         flags interval
         auto-merge
+        elements = { ::/0 }
     }
 
     set blacklist-v4 {
