@@ -9,7 +9,6 @@ __version__ = "1.1.0"
 import argparse
 import os.path
 import re
-import socket
 import ssl
 import urllib.error
 import urllib.request
@@ -34,6 +33,7 @@ BLOCK_FORWARD = config["BLOCK_FORWARD"]
 GH_BASE_URL = config["GH_BASE_URL"]
 TIMEOUT = config["TIMEOUT"]
 RETRIES = config["RETRIES"]
+STATUS_SKIP_RETRYING = frozenset(config["STATUS_SKIP_RETRYING"])
 
 
 # Correct incorrect YAML parsing of NO (Norway)
@@ -169,21 +169,27 @@ def get_urls(urls):
                 content = response.read().decode("utf-8")
             except BaseException as exc:
                 print("WARN", getattr(exc, "message", repr(exc)), url, file=stderr)
-                if isinstance(exc, urllib.error.URLError) and isinstance(
-                    exc.reason, socket.timeout
+                if (
+                    isinstance(exc, urllib.error.HTTPError)
+                    and exc.code in STATUS_SKIP_RETRYING
                 ):
-                    print("RETRY", url)
-                    continue
-            else:
-                content = re.sub(r"[#;].*", "", content, flags=re.MULTILINE)
-                ip_list = list(filter(bool, map(str.strip, content.splitlines())))
+                    break
+                print("RETRY", url, file=stderr)
+                continue
+            content = re.sub(r"[#;].*", "", content, flags=re.MULTILINE)
+            ip_list = list(filter(bool, map(str.strip, content.splitlines())))
             break
+        else:
+            print("ERROR", "failed to fetch {url}", file=stderr)
+            return None
         return ip_list
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         do_urls = [executor.submit(get_cidr_or_url, url) for url in urls]
         for out in as_completed(do_urls):
             ip_list = out.result()
+            if ip_list is None:
+                return None
             ip_list_aggregated.extend(ip_list)
     return sorted(frozenset(ip_list_aggregated))
 
@@ -210,12 +216,11 @@ def get_country_ip_list(ip_ver):
     """Get country lists from multiple sources"""
     urls = []
     for country in COUNTRY_LIST:
-        if ip_ver == "v4":
-            url = f"https://www.ipdeny.com/ipblocks/data/aggregated/{country.lower()}-aggregated.zone"
-            urls.append(url)
-        elif ip_ver == "v6":
-            url = f"https://www.ipdeny.com/ipv6/ipaddresses/aggregated/{country.lower()}-aggregated.zone"
-            urls.append(url)
+        url = {
+            "v4": f"https://www.ipdeny.com/ipblocks/data/aggregated/{country.lower()}-aggregated.zone",
+            "v6": f"https://www.ipdeny.com/ipv6/ipaddresses/aggregated/{country.lower()}-aggregated.zone",
+        }[ip_ver]
+        urls.append(url)
         url = f"{GH_BASE_URL}/ipverse/rir-ip/master/country/{country.lower()}/ip{ip_ver.lower()}-aggregated.txt"
         urls.append(url)
         url = f"{GH_BASE_URL}/herrbischoff/country-ip-blocks/master/ip{ip_ver}/{country.lower()}.cidr"
@@ -229,6 +234,13 @@ def whitelist_sets(reload=False, dry_run=False):
     for ip_ver in IP_VER:
         set_name = f"whitelist-{ip_ver}"
         ip_list = get_whitelist(ip_ver)
+        if ip_list is None:
+            print(
+                "ERROR",
+                f"FAILED to build whitelist, skip update {set_name}",
+                file=stderr,
+            )
+            continue
         set_list = ", ".join(ip_list)
         nft_set = Template(SET_TEMPLATE).substitute(
             ip_ver=f"ip{ip_ver}", set_name=set_name, ip_list=set_list
@@ -247,6 +259,13 @@ def blacklist_sets(reload=False, dry_run=False):
     for ip_ver in IP_VER:
         set_name = f"blacklist-{ip_ver}"
         ip_list = get_blacklist(ip_ver)
+        if ip_list is None:
+            print(
+                "ERROR",
+                f"FAILED to build blacklist, skip update {set_name}",
+                file=stderr,
+            )
+            continue
         set_list = ", ".join(ip_list)
         nft_set = Template(SET_TEMPLATE).substitute(
             ip_ver=f"ip{ip_ver}", set_name=set_name, ip_list=set_list
@@ -265,6 +284,21 @@ def country_sets(reload=False, dry_run=False):
     for ip_ver in IP_VER:
         set_name = f"country-{ip_ver}"
         ip_list = get_country_ip_list(ip_ver)
+        if ip_list is None:
+            if COUNTRY_POLICY == "block":
+                print(
+                    "ERROR",
+                    f"FAILED to build country sets, skip update {set_name}",
+                    file=stderr,
+                )
+                continue
+            else:
+                print(
+                    "ERROR",
+                    "FAILED to build country sets, allowing everything",
+                    file=stderr,
+                )
+                ip_list = {"v4": ["0.0.0.0/0"], "v6": ["::/0"]}[ip_ver]
         set_list = ", ".join(ip_list)
         nft_set = Template(SET_TEMPLATE).substitute(
             ip_ver=f"ip{ip_ver}", set_name=set_name, ip_list=set_list
