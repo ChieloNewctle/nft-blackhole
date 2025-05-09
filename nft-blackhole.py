@@ -180,7 +180,7 @@ def get_urls(urls):
             ip_list = list(filter(bool, map(str.strip, content.splitlines())))
             break
         else:
-            print("ERROR", "failed to fetch {url}", file=stderr)
+            print("ERROR", "failed to fetch:", url, file=stderr)
             return None
         return ip_list
 
